@@ -1,1 +1,2 @@
-# dum-components
+# Deterministic Uncertainty Methods (DUMs)
+...
