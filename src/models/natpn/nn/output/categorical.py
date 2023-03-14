@@ -9,7 +9,7 @@ class CategoricalOutput(Output):
     Categorical output with uniformative Dirichlet prior.
     """
 
-    def __init__(self, dim: int, num_classes: int, prior_coeff: float):
+    def __init__(self, dim: int, num_classes: int, evidence_scaler: float):
         """
         Args:
             dim: The dimension of the latent space.
@@ -17,7 +17,7 @@ class CategoricalOutput(Output):
         """
         super().__init__()
         self.linear = nn.Linear(dim, num_classes)
-        self.prior = D.DirichletPrior(num_categories=num_classes, evidence=num_classes*prior_coeff)
+        self.prior = D.DirichletPrior(num_categories=num_classes, evidence=num_classes*evidence_scaler)
 
     def forward(self, x: torch.Tensor) -> D.Likelihood:
         z = self.linear.forward(x)

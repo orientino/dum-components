@@ -1,5 +1,4 @@
 from typing import Any, Tuple
-import numpy as np
 import torch
 from torch.utils.data import Dataset, TensorDataset
 
@@ -36,18 +35,3 @@ def tabular_ood_dataset(data_id: torch.Tensor, data_ood: torch.Tensor) -> Tensor
         ]
     )
     return TensorDataset(X, y)
-
-
-def scale_oodom(x: torch.Tensor) -> torch.Tensor:
-    """
-    Scales the given input with a constant of 255 such that it can be considered out-of-domain.
-    """
-    return x * 255
-
-
-def zero_channel(x: torch.Tensor) -> torch.Tensor:
-    """
-    Zeroes a channel
-    """
-    x[np.random.randint(0, 3), :, :] *= 0
-    return x

@@ -3,29 +3,24 @@ import random
 import time
 import tempfile
 import logging
-from typing import List, Tuple, cast
+from typing import Tuple
 from pathlib import Path
-
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import pytorch_lightning as pl
-import seml
 from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import LearningRateMonitor, ModelCheckpoint
-from pytorch_lightning.callbacks.early_stopping import EarlyStopping
-from torchmetrics import Accuracy, MeanSquaredError, AUROC
 from torchmetrics.functional import accuracy
-from sacred import Experiment
-from src.architectures.activation import ActivationType
 from src.architectures.encoder import *
-from src.metrics import BrierScore
 from src.datasets import DATASET_REGISTRY
 from src.models import suppress_pytorch_lightning_logs
 
-ex = Experiment()
-seml.setup_logger(ex)
 logger = logging.getLogger(__name__)
+
+
+"""
+Self-contained code for training an encoder to be used for DUMs.
+"""
 
 
 class LitModel(pl.LightningModule):
@@ -33,17 +28,14 @@ class LitModel(pl.LightningModule):
         self, 
         model: EncoderType = "resnet18",
         latent_dim: int = 100,
-        act_fun: ActivationType = "relu",
         dropout: float = 0.0,
         residual: bool = True,
         spectral: Tuple[bool] = (False, False, False),
         coeff: float = 1.0,
         n_power_iterations: int = 1,
         reconst_weight: float = 0.0,
-
         n_classes: int = 10,
         input_size: int = 32,
-
         pretrained_path: str = "",
         learning_rate: float = 0.05, 
         weight_decay: float = 1.0, 
@@ -60,7 +52,6 @@ class LitModel(pl.LightningModule):
                 2, 
                 [64] * 3, 
                 n_classes,
-                act=act_fun,
                 spectral=spectral,
                 residual=residual,
                 coeff=coeff,
@@ -72,7 +63,6 @@ class LitModel(pl.LightningModule):
                 latent_dim,
                 n_classes, 
                 input_size, 
-                act=act_fun,
                 residual=residual,
                 spectral=spectral,
                 coeff=coeff,
@@ -81,7 +71,6 @@ class LitModel(pl.LightningModule):
             )
             if reconst_weight > 0:
                 self.decoder = ResNetDecoder(
-                    act=act_fun,
                     spectral=spectral,
                     coeff=coeff,
                     n_power_iterations=n_power_iterations,
@@ -188,18 +177,6 @@ class LitModel(pl.LightningModule):
                     optimizer, milestones=[60, 120, 160], gamma=0.2
                 )
             }
-        elif self.hparams.scheduler == "multistep10":
-            lr_scheduler = {
-                "scheduler": torch.optim.lr_scheduler.MultiStepLR(
-                    optimizer, milestones=[10, 20], gamma=0.2
-                )
-            }
-        elif self.hparams.scheduler == "multistep100":
-           lr_scheduler = {
-               "scheduler": torch.optim.lr_scheduler.MultiStepLR(
-                   optimizer, milestones=[100, 150, 175], gamma=0.2
-               )
-           }
         elif self.hparams.scheduler == "cosine5e-4":
             lr_scheduler = {
                 "scheduler": torch.optim.lr_scheduler.CosineAnnealingLR(
@@ -218,36 +195,12 @@ class LitModel(pl.LightningModule):
                 ),
                 "interval": "step",
             }
-        elif self.hparams.scheduler == "cosine5e-5":
-            lr_scheduler = {
-                "scheduler": torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optimizer,
-                    T_max=self.hparams.max_epochs * self.hparams.n_batches,
-                    eta_min=5e-5,
-                ),
-                "interval": "step",
-            }
         else:
             raise NotImplementedError
 
         return [optimizer], lr_scheduler
 
 
-@ex.post_run_hook
-def collect_stats(_run):
-    seml.collect_exp_stats(_run)
-
-
-@ex.config
-def config():
-    overwrite = None
-    db_collection = None
-    if db_collection is not None:
-        ex.observers.append(seml.create_mongodb_observer(
-            db_collection, overwrite=overwrite))
-
-
-@ex.automain
 def run(
         project_name: str,
         dataset_name: str,
@@ -258,7 +211,6 @@ def run(
         directory_model: str,
         model: EncoderType,
         latent_dim: int,
-        act_fun: ActivationType = "relu",
         dropout: float = 0.0,
         residual: bool = True,
         spectral: Tuple[bool] = (False, False, False),
@@ -303,17 +255,14 @@ def run(
     params_dict = dict(
         model=model,
         latent_dim=latent_dim,
-        act_fun=act_fun,
         dropout=dropout,
         residual=residual,
         spectral=spectral,
         coeff=coeff,
         n_power_iterations=n_power_iterations,
         reconst_weight=reconst_weight,
-
         n_classes=dm.num_classes,
         input_size=dm.input_size[1],
-
         pretrained_path=pretrained_path,
         learning_rate=learning_rate,
         weight_decay=weight_decay,
@@ -371,7 +320,6 @@ def run(
 
     fail_trace = {
         "model_path": model_path,
-        # "fail_trace": seml.evaluation.get_results,
         "training_time": t1 - t0,
     }
 

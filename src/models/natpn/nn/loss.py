@@ -16,7 +16,7 @@ class BayesianLoss(nn.Module):
         """
         Args:
             entropy_weight: The weight for the entropy regualarizer.
-            reconst_weight: TODO
+            reconst_weight: The weight for the reconstruction regularizer.
             reduction: The reduction to apply to the loss. Must be one of "mean", "sum", "none".
         """
         super().__init__()
@@ -33,8 +33,8 @@ class BayesianLoss(nn.Module):
             y_pred: The posterior distribution predicted by the Natural Posterior Network.
             y_true: The true targets. Either indices for classes of a classification problem or
                 the real target values. Must have the same batch shape as ``y_pred``.
-            X: TODO
-            y_hat: TODO
+            X: The raw input of the network.
+            y_hat: The reconstructed input from the decoder.
 
         Returns:
             The loss, processed according to ``self.reduction``.

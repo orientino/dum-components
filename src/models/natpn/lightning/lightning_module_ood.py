@@ -1,9 +1,8 @@
 # pylint: disable=abstract-method
-from typing import Union
 import torch
 import pytorch_lightning as pl
 from torchmetrics import Accuracy, AUROC
-from src.metrics import BrierScore, AUCPR
+from src.metrics import BrierScore
 import src.models.natpn.distributions as D
 from src.models.natpn.nn import BayesianLoss, NaturalPosteriorNetworkModel
 from .lightning_module import Batch
@@ -23,13 +22,8 @@ class NaturalPosteriorNetworkOodTestingLightningModule(pl.LightningModule):
         self.model = model
         self.logging_key = logging_key
 
-        self.alea_conf_pr = AUCPR(compute_on_step=False, dist_sync_fn=self.all_gather)
         self.alea_conf_roc = AUROC(compute_on_step=False, dist_sync_fn=self.all_gather)
-
-        self.epist_conf_pr = AUCPR(compute_on_step=False, dist_sync_fn=self.all_gather)
         self.epist_conf_roc = AUROC(compute_on_step=False, dist_sync_fn=self.all_gather)
-
-        self.pred_conf_pr = AUCPR(compute_on_step=False, dist_sync_fn=self.all_gather)
         self.pred_conf_roc = AUROC(compute_on_step=False, dist_sync_fn=self.all_gather)
 
     def test_step(self, batch: Batch, _batch_idx: int) -> None:
@@ -42,8 +36,6 @@ class NaturalPosteriorNetworkOodTestingLightningModule(pl.LightningModule):
         aleatoric_conf = -posterior.maximum_a_posteriori().uncertainty()
         if aleatoric_conf.dim() > 1:
             aleatoric_conf = aleatoric_conf.mean(tuple(range(1, aleatoric_conf.dim())))
-        self.alea_conf_pr.update(aleatoric_conf, y)
-        self.log(f"{self.logging_key}/aleatoric_confidence_auc_pr", self.alea_conf_pr)
         self.alea_conf_roc.update(aleatoric_conf, y)
         self.log(f"{self.logging_key}/aleatoric_confidence_auc_roc", self.alea_conf_roc)
 
@@ -51,8 +43,6 @@ class NaturalPosteriorNetworkOodTestingLightningModule(pl.LightningModule):
         epistemic_conf = log_prob
         if epistemic_conf.dim() > 1:
             epistemic_conf = epistemic_conf.mean(tuple(range(1, epistemic_conf.dim())))
-        self.epist_conf_pr.update(epistemic_conf, y)
-        self.log(f"{self.logging_key}/epistemic_confidence_auc_pr", self.epist_conf_pr)
         self.epist_conf_roc.update(epistemic_conf, y)
         self.log(f"{self.logging_key}/epistemic_confidence_auc_roc", self.epist_conf_roc)
 
@@ -60,15 +50,13 @@ class NaturalPosteriorNetworkOodTestingLightningModule(pl.LightningModule):
         pred_conf = -posterior.posterior_predictive().uncertainty()
         if pred_conf.dim() > 1:
             pred_conf = pred_conf.mean(tuple(range(1, pred_conf.dim())))
-        self.pred_conf_pr.update(pred_conf, y)
-        self.log(f"{self.logging_key}/predictive_confidence_auc_pr", self.pred_conf_pr)
         self.pred_conf_roc.update(pred_conf, y)
         self.log(f"{self.logging_key}/predictive_confidence_auc_roc", self.pred_conf_roc)
 
 
 class NaturalPosteriorNetworkOodCorruptedLightningModule(pl.LightningModule):
     """
-    Lightning module for training and evaluating NatPN.
+    Lightning module for evaluating NatPN on the CIFAR corrupted dataset.
     """
 
     def __init__(
@@ -77,11 +65,6 @@ class NaturalPosteriorNetworkOodCorruptedLightningModule(pl.LightningModule):
         logging_key: str,
         entropy_weight: float,
     ):
-        """
-        Args:
-            model: The model to train or evaluate. If training, this *must* be a
-                :class:`NaturalPosteriorNetworkModel`.
-        """
         super().__init__()
         self.model = model
         self.logging_key = logging_key

@@ -24,7 +24,6 @@ from src.models.dkl.lightning.lightning_module import DeepKernelLearningLightnin
 from src.models.dkl.lightning.lightning_module_gp import DeepKernelLearningGPLightningModule
 from src.models.dkl.lightning.lightning_module_ood import DeepKernelLearningOodTestingLightningModule, DeepKernelLearningOodCorruptedLightningModule
 from src.architectures.encoder import *
-from src.architectures.activation import *
 from src.datasets import DataModule
 
 logger = logging.getLogger(__name__)
@@ -35,14 +34,13 @@ class DeepKernelLearning(gpytorch.Module):
         self, 
         latent_dim: int = 16,
         encoder: EncoderType = "resnet18", 
-        encoder_act: ActivationType = "relu",
         kernel: str = "RBF",
         n_inducing_points: int = 0,
-        n_inducing_points_coeff: float = 1.0,
+        n_inducing_points_scaler: float = 1.0,
         dropout: int = 0,
         residual: bool = True,
         spectral: Tuple[bool] = (False, False, False),
-        coeff: float = 1.0, 
+        lipschitz_constant: float = 1.0, 
         n_power_iterations: int = 1,
         bn_out: bool = False,
         reconst_weight: float = 0.0,
@@ -50,7 +48,7 @@ class DeepKernelLearning(gpytorch.Module):
 
         # Training parameters
         learning_rate: float = 1e-3,
-        learning_rate_gp: float = 1e-3,
+        learning_rate_head: float = 1e-3,
         early_stopping: bool = False,
         optim: str = "sgd",
         scheduler: str = "cosine5e-4",
@@ -61,20 +59,38 @@ class DeepKernelLearning(gpytorch.Module):
         logger = None,
     ):
         """
-        This wrapper class is necessary because ApproximateGP (above) does some magic
-        on the forward method which is not compatible with a feature_extractor.
+        Args:
+            latent_dim: The dimension of the latent space that the encoder should map to.
+            encoder: The type of encoder to use which maps the input to the latent space.
+            kernel: The type of kernel function used in the Gaussian Process.
+            n_inducing_points: The number of inducing points used (default = #classes)
+            n_inducing_points_scaler: The scaler for the n_inducing points 
+            dropout: The dropout probability to use for dropout layers in the encoder.
+            residual: Used only for the TabularEncoder
+            spectral: The usage of spectral normalization for different layers
+                (spectral_fc, spectral_conv, spectral_bn)
+            lipschitz_constant: The spectral normalization's Lipschitz constant parameter.
+            n_power_iterations: The spectral normalization's power iteration parameter.
+            bn_out: Append the batch normalization layer at the end of the encoder.
+            reconst_weight: The reconstruction term coefficient in the loss.
+            pretrained_enc_path: The path used to load a pretrained encoder.
+            learning_rate: The learning rate to use for training encoder.
+            learning_rate_head: The learning rate to use for training the Gaussian Process.
+            early_stopping: Early stopping for the training.
+            optim: The optimizer used.
+            scheduler: The scheduler used to schedule the optimizer.
+            training_schema: The training schema joint or frozen.
         """
         super().__init__()
         self.latent_dim = latent_dim
         self.encoder = encoder
-        self.encoder_act = encoder_act
         self.kernel = kernel
         self.n_inducing_points = n_inducing_points
-        self.n_inducing_points_coeff = n_inducing_points_coeff
+        self.n_inducing_points_scaler = n_inducing_points_scaler
         self.dropout = dropout
         self.residual = residual
         self.spectral = spectral
-        self.coeff = coeff
+        self.lipschitz_constant = lipschitz_constant
         self.n_power_iterations = n_power_iterations
         self.bn_out = bn_out
         self.reconst_weight = reconst_weight
@@ -85,7 +101,7 @@ class DeepKernelLearning(gpytorch.Module):
 
         self.lightning_params = dict(
             learning_rate=learning_rate,
-            learning_rate_gp=learning_rate_gp,
+            learning_rate_head=learning_rate_head,
             early_stopping=early_stopping,
             optim=optim,
             scheduler=scheduler,
@@ -165,10 +181,10 @@ class DeepKernelLearning(gpytorch.Module):
         callbacks = [lr_monitor] if self.trainer_params["logger"] else []
 
         # Select joint training schema
-        # joint-all:                Pretrained -> Joint (all)
-        # joint-frozen-enc:         Pretrained -> Joint (NF + output)
-        # reset-joint-all:          Pretrained (reset linear) -> Joint (all)
-        # reset-joint-frozen-enc:   Pretrained (reset linear) -> Joint (NF + output + last linear)
+        # joint-all:                Train GP + encoder
+        # joint-frozen-enc:         Train GP
+        # reset-joint-all:          Train GP + encoder (reset last layer)
+        # reset-joint-frozen-enc:   Train GP + encoder (reset last layer only)
         if self.training_schema == "joint-all":
             logger.info("Running joint-all...")
         elif self.training_schema == "joint-frozen-enc":
@@ -189,7 +205,7 @@ class DeepKernelLearning(gpytorch.Module):
         else:
             raise NotImplementedError
 
-        # Run joint training
+        # Run training
         trainer = Trainer(
             callbacks=callbacks,
             max_epochs=self.max_epochs,
@@ -239,10 +255,9 @@ class DeepKernelLearning(gpytorch.Module):
                 input_size[0], 
                 [64] * 3, 
                 self.latent_dim,
-                act=self.encoder_act,
                 spectral=self.spectral,
                 residual=self.residual,
-                coeff=self.coeff,
+                lipschitz_constant=self.lipschitz_constant,
                 n_power_iterations=self.n_power_iterations,
                 reconst_out=self.reconst_weight>0,
             )
@@ -251,10 +266,9 @@ class DeepKernelLearning(gpytorch.Module):
                     self.latent_dim,
                     [64] * 3,
                     input_size[0],
-                    act=self.encoder_act,
                     spectral=self.spectral,
                     residual=self.residual,
-                    coeff=self.coeff,
+                    lipschitz_constant=self.lipschitz_constant,
                     n_power_iterations=self.n_power_iterations,
                 )
         elif self.encoder == "resnet18":
@@ -262,18 +276,16 @@ class DeepKernelLearning(gpytorch.Module):
                 self.latent_dim, 
                 num_classes,
                 input_size[1], 
-                act=self.encoder_act,
                 residual=self.residual,
                 spectral=self.spectral, 
-                coeff=self.coeff,
+                lipschitz_constant=self.lipschitz_constant,
                 n_power_iterations=self.n_power_iterations,
                 reconst_out=self.reconst_weight>0,
             )
             if self.reconst_weight > 0:
                 self.decoder = ResNetDecoder(
-                    act=self.encoder_act,
                     spectral=self.spectral,
-                    coeff=self.coeff,
+                    lipschitz_constant=self.lipschitz_constant,
                     n_power_iterations=self.n_power_iterations,
                 )
         elif self.encoder == "wide-resnet":
@@ -287,7 +299,7 @@ class DeepKernelLearning(gpytorch.Module):
         elif self.encoder == "resnet18-tv":
             self.encoder = tv_resnet18(True, self.latent_dim, num_classes)
         elif self.encoder == "resnet50":
-            self.encoder = tv_resnet50(False, self.latent_dim, num_classes)
+            self.encoder = tv_resnet50(True, self.latent_dim, num_classes)
         elif self.encoder == "efficientnet_v2_s":
             self.encoder = tv_efficientnet_v2_s(True, self.latent_dim, num_classes)
         elif self.encoder == "swin_t":
@@ -313,7 +325,7 @@ class DeepKernelLearning(gpytorch.Module):
 
         # Initialize GP
         if self.n_inducing_points == 0:
-            self.n_inducing_points = int(num_classes * self.n_inducing_points_coeff)
+            self.n_inducing_points = int(num_classes * self.n_inducing_points_scaler)
         initial_inducing_points, initial_lengthscale = self._initial_values(
             train_dataset, self.encoder, self.n_inducing_points
         )
@@ -369,16 +381,13 @@ class GP(ApproximateGP):
         kernel="RBF",
     ):
         n_inducing_points = initial_inducing_points.shape[0]
-
         if num_outputs > 1:
             batch_shape = torch.Size([num_outputs])
         else:
             batch_shape = torch.Size([])
-
         variational_distribution = CholeskyVariationalDistribution(
             n_inducing_points, batch_shape=batch_shape
         )
-
         variational_strategy = VariationalStrategy(
             self, initial_inducing_points, variational_distribution
         )
@@ -390,10 +399,7 @@ class GP(ApproximateGP):
 
         super().__init__(variational_strategy)
 
-        kwargs = {
-            "batch_shape": batch_shape,
-        }
-
+        kwargs = {"batch_shape": batch_shape}
         if kernel == "RBF":
             kernel = RBFKernel(**kwargs)
         elif kernel == "Matern12":

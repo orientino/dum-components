@@ -1,8 +1,7 @@
-from typing import Tuple, List
+from typing import Tuple
 import torch
 from torch import nn
 import src.models.natpn.distributions as D
-from .flow import NormalizingFlow
 from .output import Output
 from .scaler import CertaintyBudget, EvidenceScaler
 
@@ -34,7 +33,6 @@ class NaturalPosteriorNetworkModel(nn.Module):
                 to the parameters of the target distribution.
             budget: The scaling factor for the certainty budget that the normalizing
                 flow can draw from.
-            budge_coeff: TODO
         """
         super().__init__()
         self.encoder = encoder

@@ -10,7 +10,6 @@ This implementation (torch-like):
 '''
 import torch.nn as nn
 import torch.nn.functional as F
-from src.architectures import activation
 from src.architectures.spectral import spectral_norm_conv, spectral_norm_conv_transposed, spectral_norm_fc, SpectralBatchNorm2d, SpectralBatchNorm1d
 
 
@@ -29,7 +28,6 @@ class BasicBlock(nn.Module):
         out_c, 
         stride,
         input_size,
-        act,
         residual=True,
     ):
         super(BasicBlock, self).__init__()
@@ -42,7 +40,6 @@ class BasicBlock(nn.Module):
         self.conv2 = wrapped_conv(input_size, out_c, out_c, 3, 1)
         self.bn2 = wrapped_bn(out_c)
 
-        self.act = act
         self.shortcut = nn.Sequential()
         if stride != 1 or in_c != self.expansion*out_c:
             self.shortcut = nn.Sequential(
@@ -53,10 +50,10 @@ class BasicBlock(nn.Module):
             self.shortcut = nn.Identity()
 
     def forward(self, x):
-        out = self.act(self.bn1(self.conv1(x)))
+        out = F.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
         out += self.shortcut(x) if self.residual else 0
-        out = self.act(out)
+        out = F.relu(out)
         return out
 
 
@@ -66,12 +63,11 @@ class ResNet(nn.Module):
         latent_dim,
         output_dim, 
         input_size,
-        act="relu",
         block=BasicBlock, 
         num_blocks=[2, 2, 2, 2], 
         residual=True,
         spectral=(False, False, False),     # (spectral_fc, spectral_conv, spectral_bn)
-        coeff=3, 
+        lipschitz_constant=3, 
         n_power_iterations=1,
         bn_out=False,
         reconst_out=False,
@@ -85,22 +81,22 @@ class ResNet(nn.Module):
             if spectral[1]:
                 if kernel_size == 1:
                     # Use spectral norm fc, because bound are tight for 1x1 convolutions
-                    return spectral_norm_fc(conv, coeff, n_power_iterations)
+                    return spectral_norm_fc(conv, lipschitz_constant, n_power_iterations)
                 else:
                     # Otherwise use spectral norm conv, with loose bound
                     input_dim = (in_c, input_size, input_size)
-                    return spectral_norm_conv(conv, coeff, input_dim, n_power_iterations)
+                    return spectral_norm_conv(conv, lipschitz_constant, input_dim, n_power_iterations)
             return conv
 
         def wrapped_bn(num_features, dim=2):
             if dim == 2:
                 if spectral[2]:
-                    return SpectralBatchNorm2d(num_features, coeff) 
+                    return SpectralBatchNorm2d(num_features, lipschitz_constant) 
                 else:
                     return nn.BatchNorm2d(num_features)
             elif dim == 1:
                 if spectral[2]:
-                    return SpectralBatchNorm1d(num_features, coeff)
+                    return SpectralBatchNorm1d(num_features, lipschitz_constant)
                 else:
                     return nn.BatchNorm1d(num_features)
             else:
@@ -109,30 +105,6 @@ class ResNet(nn.Module):
         self.wrapped_conv = wrapped_conv
         self.wrapped_bn = wrapped_bn
         self.residual = residual
-
-        # Define the activation function
-        if act == "relu":
-            self.act = nn.ReLU()
-        elif act == "tanh":
-            self.act = nn.Tanh()
-        elif act == "gelu":
-            self.act = nn.GELU()
-        elif act == "mish":
-            self.act = nn.Mish()
-        elif act == "silu":
-            self.act = nn.SiLU()
-        elif act == "l-matern":
-            self.act = activation.matern
-        elif act == "p-sin":
-            self.act = activation.sin
-        elif act == "p-sincos":
-            self.act = activation.sincos
-        elif act == "p-triangle":
-            self.act = activation.triangle
-        elif act == "p-relu":
-            self.act = activation.periodic_relu
-        else:
-            raise NotImplementedError
 
         # Define the architecture
         strides = [1, 2, 2, 2]
@@ -151,8 +123,8 @@ class ResNet(nn.Module):
             block, 128, 256, num_blocks[3], strides[3], input_size
         )
         if spectral[0]:
-            self.linear_latent = spectral_norm_fc(nn.Linear(256 * block.expansion, latent_dim), coeff) 
-            self.linear = spectral_norm_fc(nn.Linear(latent_dim, output_dim), coeff) 
+            self.linear_latent = spectral_norm_fc(nn.Linear(256 * block.expansion, latent_dim), lipschitz_constant) 
+            self.linear = spectral_norm_fc(nn.Linear(latent_dim, output_dim), lipschitz_constant) 
         else:
             self.linear_latent = nn.Linear(256 * block.expansion, latent_dim)
             self.linear = nn.Linear(latent_dim, output_dim)
@@ -174,7 +146,6 @@ class ResNet(nn.Module):
                     out_c, 
                     stride,
                     input_size,
-                    self.act,
                     self.residual,
                 )
             )
@@ -186,7 +157,7 @@ class ResNet(nn.Module):
         self.bn_out = self.wrapped_bn(output_dim, dim=1)
 
     def forward(self, x):
-        out = self.act(self.bn1(self.conv1(x)))
+        out = F.relu(self.bn1(self.conv1(x)))
         out = self.layer1(out)
         out = self.layer2(out)
         out = self.layer3(out)
@@ -222,7 +193,6 @@ class DecoderBlock(nn.Module):
         out_c, 
         stride,
         input_size,
-        act,
     ):
         super(DecoderBlock, self).__init__()
 
@@ -231,7 +201,6 @@ class DecoderBlock(nn.Module):
         self.conv_transposed2 = wrapped_conv_transposed(input_size, in_c, out_c, 3, stride)
         self.bn2 = wrapped_bn(out_c)
 
-        self.act = act
         self.shortcut = nn.Sequential()
         if stride != 1 or in_c != out_c:
             self.shortcut = nn.Sequential(
@@ -242,19 +211,18 @@ class DecoderBlock(nn.Module):
             self.shortcut = nn.Identity()
 
     def forward(self, x):
-        out = self.act(self.bn1(self.conv_transposed1(x)))
+        out = F.relu(self.bn1(self.conv_transposed1(x)))
         out = self.bn2(self.conv_transposed2(out))
         out += self.shortcut(x)
-        out = self.act(out)
+        out = F.relu(out)
         return out
 
 
 class ResNetDecoder(nn.Module):
     def __init__(
         self, 
-        act="relu",
         spectral=(False, False, False),
-        coeff=1,
+        lipschitz_constant=3,
         n_power_iterations=1,
     ):
         super(ResNetDecoder, self).__init__()
@@ -266,38 +234,24 @@ class ResNetDecoder(nn.Module):
             if spectral[1]:
                 if kernel_size == 1:
                     # Use spectral norm fc, because bound are tight for 1x1 convolutions
-                    return spectral_norm_fc(conv, coeff, n_power_iterations)
+                    return spectral_norm_fc(conv, lipschitz_constant, n_power_iterations)
                 else:
                     # Otherwise use spectral norm conv, with loose bound
                     input_dim = (in_c, input_size, input_size)
-                    return spectral_norm_conv_transposed(conv, coeff, input_dim, n_power_iterations)
+                    return spectral_norm_conv_transposed(conv, lipschitz_constant, input_dim, n_power_iterations)
             return conv
 
         def wrapped_bn(num_features):
             if spectral[2]:
-                return SpectralBatchNorm2d(num_features, coeff) 
+                return SpectralBatchNorm2d(num_features, lipschitz_constant) 
             return nn.BatchNorm2d(num_features)
-
-        # Define the activation function
-        if act == "relu":
-            self.act = nn.ReLU()
-        elif act == "tanh":
-            self.act = nn.Tanh()
-        elif act == "gelu":
-            self.act = nn.GELU()
-        elif act == "mish":
-            self.act = nn.Mish()
-        elif act == "silu":
-            self.act = nn.SiLU()
-        else:
-            raise NotImplementedError
 
         # Define the architecture
         self.upsample = nn.Upsample(scale_factor=2)
-        self.layer1 = DecoderBlock(wrapped_conv_transposed, wrapped_bn, 256, 128, 1, input_size=4, act=self.act)
-        self.layer2 = DecoderBlock(wrapped_conv_transposed, wrapped_bn, 128, 64, 1, input_size=8, act=self.act)
-        self.layer3 = DecoderBlock(wrapped_conv_transposed, wrapped_bn, 64, 32, 1, input_size=16, act=self.act)
-        self.layer4 = DecoderBlock(wrapped_conv_transposed, wrapped_bn, 32, 3, 1, input_size=32, act=self.act)
+        self.layer1 = DecoderBlock(wrapped_conv_transposed, wrapped_bn, 256, 128, 1, input_size=4)
+        self.layer2 = DecoderBlock(wrapped_conv_transposed, wrapped_bn, 128, 64, 1, input_size=8)
+        self.layer3 = DecoderBlock(wrapped_conv_transposed, wrapped_bn, 64, 32, 1, input_size=16)
+        self.layer4 = DecoderBlock(wrapped_conv_transposed, wrapped_bn, 32, 3, 1, input_size=32)
 
     def forward(self, x):
         out = self.layer1(x)

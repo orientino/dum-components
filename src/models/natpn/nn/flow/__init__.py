@@ -2,7 +2,6 @@ from typing import Literal
 from ._base import NormalizingFlow
 from .maf import MaskedAutoregressiveFlow
 from .radial import RadialFlow
-from .residual import ResidualFlow
 from .neural_spline import NeuralSplineFlow
 
 FlowType = Literal["radial", "maf", "residual"]
@@ -14,7 +13,6 @@ A reference to a flow type that can be used with :class:`NaturalPosteriorNetwork
 """
 
 __all__ = [
-    "ResidualFlow", 
     "NeuralSplineFlow", 
     "MaskedAutoregressiveFlow",
     "NormalizingFlow", 

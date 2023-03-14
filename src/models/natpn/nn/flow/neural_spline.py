@@ -1,13 +1,14 @@
 from ._base import NormalizingFlow
 import torch
 import torch.nn as nn
-import normflow as nf
+import normflows as nf
 import larsflow as lf
 
 
 class NeuralSplineFlow(nn.Module):
     """
-    Normalizing flow ...
+    Neural Spline Flow with resampled base.
+    https://github.com/VincentStimper/resampled-base-flows
     """
 
     def __init__(
@@ -47,7 +48,7 @@ class NeuralSplineFlow(nn.Module):
         """
         log_q = torch.zeros(len(x), dtype=x.dtype, device=x.device)
         z = x
-        for i in range(len(self.flows) - 1, -1, -1):
+        for i in range(len(self.flows)-1, -1, -1):
             z, log_det = self.flows[i].inverse(z)
             log_q += log_det
         log_q += self.q0.log_prob(z)

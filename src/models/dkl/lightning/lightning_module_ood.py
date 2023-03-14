@@ -2,14 +2,14 @@
 import pytorch_lightning as pl
 import gpytorch
 import torch
-from torchmetrics import Accuracy, MeanSquaredError, AUROC
-from src.metrics import BrierScore, AUCPR
+from torchmetrics import Accuracy, AUROC
+from src.metrics import BrierScore
 from .lightning_module import Batch
 
 
 class DeepKernelLearningOodTestingLightningModule(pl.LightningModule):
     """
-    Lightning module for evaluating the OOD detection performance of NatPN.
+    Lightning module for evaluating the OOD detection performance of DUE.
     """
 
     def __init__(
@@ -21,7 +21,6 @@ class DeepKernelLearningOodTestingLightningModule(pl.LightningModule):
         self.model = model
         self.logging_key = logging_key
 
-        self.pred_conf_pr = AUCPR(compute_on_step=False, dist_sync_fn=self.all_gather)
         self.pred_conf_roc = AUROC(compute_on_step=False, dist_sync_fn=self.all_gather)
 
     def test_step(self, batch: Batch, _batch_idx: int) -> None:
@@ -37,14 +36,13 @@ class DeepKernelLearningOodTestingLightningModule(pl.LightningModule):
         uncertainty = -(output * output.log()).sum(1)
         uncertainty = 1 - uncertainty
 
-        self.pred_conf_pr.update(uncertainty, y_true)
-        self.log(f"{self.logging_key}/predictive_confidence_auc_pr", self.pred_conf_pr)
         self.pred_conf_roc.update(uncertainty, y_true)
         self.log(f"{self.logging_key}/predictive_confidence_auc_roc", self.pred_conf_roc)
 
 
 class DeepKernelLearningOodCorruptedLightningModule(pl.LightningModule):
     """
+    Lightning module for evaluating the performance of DUE on the CIFAR corrupted dataset.
     """
 
     def __init__(

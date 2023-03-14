@@ -1,5 +1,6 @@
 from __future__ import annotations
 import torch
+import numpy as np
 
 
 class StandardScaler:
@@ -53,3 +54,18 @@ class IdentityScaler:
         Identity.
         """
         return X
+
+
+def scale_oodom(x: torch.Tensor) -> torch.Tensor:
+    """
+    Scales the given input with a constant of 255 such that it can be considered out-of-domain.
+    """
+    return x * 255
+
+
+def zero_channel(x: torch.Tensor) -> torch.Tensor:
+    """
+    Zeroes a channel
+    """
+    x[np.random.randint(0, 3), :, :] *= 0
+    return x

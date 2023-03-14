@@ -289,7 +289,6 @@ class CMnistDataModule(_MnistDataModule):
         return [
             DataLoader(self.val_dataset, batch_size=512),
             DataLoader(self.val_ood_dataset, batch_size=512),
-            # DataLoader(self.test_dataset_cmnist, batch_size=512),
         ]
 
     def test_dataloader(self) -> List[EVAL_DATALOADERS]:

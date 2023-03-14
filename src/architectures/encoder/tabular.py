@@ -1,7 +1,7 @@
 import torch
 from typing import List, Tuple
-from torch import nn
-from src.architectures.activation import *
+import torch.nn as nn
+import torch.nn.functional as F
 from src.architectures.spectral.spectral_norm_fc import spectral_norm_fc
 from src.architectures.spectral.spectral_batchnorm import SpectralBatchNorm1d
 
@@ -17,10 +17,9 @@ class TabularEncoder(nn.Module):
         hidden_dims: List[int],
         output_dim: int,
         *,
-        act: ActivationType = "relu",
         residual: bool = False,
         spectral: Tuple[bool, bool, bool] = (False, False, False),      # (spectral_fc, spectral_conv, spectral_bn)
-        coeff: float = 0.95,
+        lipschitz_constant: float = 1.0,
         n_power_iterations: int = 1,
         bn_out: bool = False,
         reconst_out: bool = False,
@@ -32,7 +31,7 @@ class TabularEncoder(nn.Module):
             output_dim: The dimension of the output, i.e. the latent space.
             spectral: Use the spectral normalization 
             residual: Use residual shortcut connection
-            coeff: The lipschitz constant
+            lipschitz_constant: The lipschitz constant constraint
             n_power_iterations: Number of iterations for the spectral normalization
             bn_out: Add batch normalization to the output
             reconst_out: Act as the decoder: forward() will output a single value instead of a tuple
@@ -41,44 +40,18 @@ class TabularEncoder(nn.Module):
 
         def wrapper_fc(in_dim, out_dim):
             if spectral[0]:
-                return spectral_norm_fc(nn.Linear(in_dim, out_dim), coeff, n_power_iterations)
+                return spectral_norm_fc(nn.Linear(in_dim, out_dim), lipschitz_constant, n_power_iterations)
             return nn.Linear(in_dim, out_dim)
 
         def wrapped_bn(num_features):
             if spectral[2]:
-                return SpectralBatchNorm1d(num_features, coeff) 
+                return SpectralBatchNorm1d(num_features, lipschitz_constant) 
             return nn.BatchNorm1d(num_features)
-            
-        # Define the activation function
-        if act == "relu":
-            self.act = nn.ReLU()
-        elif act == "leakyrelu":
-            self.act = nn.LeakyReLU()
-        elif act == "tanh":
-            self.act = nn.Tanh()
-        elif act == "gelu":
-            self.act = nn.GELU()
-        elif act == "mish":
-            self.act = nn.Mish()
-        elif act == "silu":
-            self.act = nn.SiLU()
-        elif act == "l-matern":
-            self.act = matern
-        elif act == "p-sin":
-            self.act = sin
-        elif act == "p-sincos":
-            self.act = sincos
-        elif act == "p-triangle":
-            self.act = triangle
-        elif act == "p-relu":
-            self.act = periodic_relu
-        else:
-            raise NotImplementedError
 
         # Define the architecture
         self.linear_in = wrapper_fc(input_dim, hidden_dims[0])
         self.layers = nn.ModuleList([
-            _TabularBlock(wrapper_fc, hidden_dims[0], self.act, residual) for _ in hidden_dims
+            _TabularBlock(wrapper_fc, hidden_dims[0], residual) for _ in hidden_dims
         ])
         self.linear_out = wrapper_fc(hidden_dims[0], output_dim)
 
@@ -100,8 +73,8 @@ class TabularEncoder(nn.Module):
             out = self.bn_out(out)
 
         # Return the input for the reconstruction decoder
-        if self.reconst_out:
-            return out, rec
+        if self.reconst_out and self.training:
+            return out, out
 
         return out
 
@@ -111,12 +84,10 @@ class _TabularBlock(nn.Module):
     Linear layer with bi-Lipschitz property using residual connections and spectral normalization.
     """
 
-    def __init__(self, wrapper_fc, dim: int, act: ActivationType, residual: bool = False):
+    def __init__(self, wrapper_fc, dim: int, residual: bool = False):
         super(_TabularBlock, self).__init__()
         self.linear = wrapper_fc(dim, dim)
-        self.act = act
         self.residual = residual
-
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = x
@@ -124,6 +95,6 @@ class _TabularBlock(nn.Module):
         out = self.linear(x)
         if self.residual:
             out += identity
-        out = self.act(out)
+        out = F.relu(out)
 
         return out

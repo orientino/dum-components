@@ -3,8 +3,6 @@ from typing import Any, Optional, cast, Dict, List, Tuple, Union
 import pytorch_lightning as pl
 import torch
 import gpytorch
-from torch import optim
-from torch.nn import ModuleList
 from src.models.dkl.lightning.lightning_module import DeepKernelLearningLightningModule
 
 Batch = Tuple[torch.Tensor, torch.Tensor]
@@ -12,6 +10,7 @@ Batch = Tuple[torch.Tensor, torch.Tensor]
 
 class DeepKernelLearningGPLightningModule(DeepKernelLearningLightningModule):
     """
+    Lightning module for optimizing the Gaussian Process of DUE.
     """
 
     def __init__(
@@ -26,10 +25,6 @@ class DeepKernelLearningGPLightningModule(DeepKernelLearningLightningModule):
         max_epochs: int = 1,
         phase: str = "train",
     ):
-        """
-        Args:
-            model: The model to train or evaluate. 
-        """
         super().__init__(
             model,
             learning_rate,

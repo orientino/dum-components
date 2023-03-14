@@ -250,7 +250,7 @@ class Cifar10DataModule(_CifarDataModule):
             )
 
         super().setup(stage=stage)
-        self._setup_corrupted_datasets(root=self.root / "cifar10-c/cifar-10-c")
+        # self._setup_corrupted_datasets(root=self.root / "cifar10-c/cifar-10-c")
 
 
 @register("cifar100")
@@ -304,11 +304,11 @@ class Cifar100DataModule(_CifarDataModule):
             )
 
         super().setup(stage=stage)
-        self._setup_corrupted_datasets(root=self.root / "cifar100-c/cifar-100-c")
+        # self._setup_corrupted_datasets(root=self.root / "cifar100-c/cifar-100-c")
 
 
 # ---------------------------------------------------------------------------------------------
-# CIFAR100 module with all the dataset resized to 224x224
+# CIFAR100 module resized to size 224x224
 
 
 class _Cifar100ResizedDataModule(Cifar100DataModule):
@@ -477,7 +477,7 @@ class _Cifar100NoiseDataModule(Cifar100DataModule):
                 train=True,
                 transform=T.Compose([T.ToTensor(), self._input_normalizer]),
             )
-            train_data = self._set_aleatoric_noise(train_data, self.noise)
+            train_data = self._inject_aleatoric_noise(train_data, self.noise)
             train_dataset, val_dataset = dataset_train_test_split(
                 train_data, train_size=0.8, generator=self.generator
             )
@@ -503,7 +503,7 @@ class _Cifar100NoiseDataModule(Cifar100DataModule):
 
         super().setup(stage=stage)
 
-    def _set_aleatoric_noise(self, data, noise):
+    def _inject_aleatoric_noise(self, data, noise):
         """ 
         Inject artificial aleatoric noise to the dataset 
         """
@@ -543,3 +543,129 @@ class Cifar100Noise2DataModule(_Cifar100NoiseDataModule):
     @property
     def noise(self) -> float:
         return 0.2
+
+
+# ---------------------------------------------------------------------------------------------
+# CIFAR100 module with injected aleatoric noise
+
+
+class AddGaussianNoise(object):
+    def __init__(self, mean=0., std=0.5):
+        self.std = std
+        self.mean = mean
+        
+    def __call__(self, tensor):
+        return tensor + torch.randn(tensor.size()) * self.std + self.mean
+    
+    def __repr__(self):
+        return self.__class__.__name__ + '(mean={0}, std={1})'.format(self.mean, self.std)
+
+
+@register("cifar100-224-gaussian")
+class Cifar100DataModule(_CifarDataModule):
+    """
+    Data module for the CIFAR-100 dataset with Gaussian noise
+    """
+
+    @property
+    def num_classes(self) -> int:
+        return 100
+
+    @property
+    def _input_normalizer(self) -> T.Normalize:
+        return T.Normalize(mean=[0.5071, 0.4866, 0.4409], std=[0.2673, 0.2564, 0.2762])
+
+    def prepare_data(self) -> None:
+        logger.info("Preparing 'CIFAR-100 Train and Test'...")
+        tvd.CIFAR100(str(self.root / "cifar100"), train=True, download=True)
+        tvd.CIFAR100(str(self.root / "cifar100"), train=False, download=True)
+        # super().prepare_data()
+
+    def setup(self, stage: Optional[str] = None) -> None:
+        if not self.did_setup:
+            train_data = tvd.CIFAR100(
+                str(self.root / "cifar100"),
+                train=True,
+                transform=T.Compose([T.Resize([224, 224]), T.ToTensor(), self._input_normalizer]),
+            )
+            train_dataset, val_dataset = dataset_train_test_split(
+                train_data, train_size=0.8, generator=self.generator
+            )
+
+            self.train_dataset = TransformedDataset(
+                train_dataset,
+                transform=T.Compose(
+                    [
+                        AddGaussianNoise(),
+                        T.RandomHorizontalFlip(),
+                        T.RandomCrop(224, padding=28)
+                    ]
+                ),
+            )
+            self.val_dataset = val_dataset
+            self.did_setup = True
+
+        if stage == "test" and not self.did_setup_ood:
+            self.test_dataset = tvd.CIFAR100(
+                str(self.root / "cifar100"),
+                train=False,
+                transform=T.Compose([T.Resize([224, 224]), T.ToTensor(), self._input_normalizer]),
+            )
+
+            train_ood_data = tvd.SVHN(
+                str(self.root / "svhn"),
+                split="train",
+                transform=T.Compose([T.Resize([224, 224]), T.ToTensor(), self._input_normalizer]),
+            )
+            _, val_ood_dataset = dataset_train_test_split(
+                train_ood_data, train_size=0.65, generator=self.generator
+            )
+            self.val_ood_dataset = val_ood_dataset
+            self.val_oodom_dataset = TransformedDataset(
+                val_ood_dataset,
+                transform=T.Compose([T.Resize([224, 224]), T.Lambda(scale_oodom)]),
+            )
+
+            self.ood_datasets = {
+                "svhn_val": OodDataset(
+                    self.val_dataset,
+                    self.val_ood_dataset,
+                ),
+                "svhn": OodDataset(
+                    self.test_dataset,
+                    tvd.SVHN(
+                        str(self.root / "svhn"),
+                        split="test",
+                        transform=T.Compose([T.Resize([224, 224]), T.ToTensor(), self._input_normalizer]),
+                    ),
+                ),
+                "stl10": OodDataset(
+                    self.test_dataset,
+                    tvd.STL10(
+                        str(self.root / "stl10"),
+                        split="test",
+                        transform=T.Compose([T.Resize([224, 224]), T.ToTensor(), self._input_normalizer]),
+                    ),
+                ),
+               "celeba": OodDataset(
+                   self.test_dataset,
+                   tvd.CelebA(
+                       str(self.root / "celeba"),
+                       split="test",
+                       transform=T.Compose([T.Resize([224, 224]), T.ToTensor(), self._input_normalizer]),
+                   ),
+               ),
+                "svhn_oodom": OodDataset(
+                    self.test_dataset,
+                    tvd.SVHN(
+                        str(self.root / "svhn"),
+                        split="test",
+                        transform=T.Compose(
+                            [T.Resize([224, 224]), T.ToTensor(), self._input_normalizer, T.Lambda(scale_oodom)]
+                        ),
+                    ),
+                ),
+            }
+
+            # Mark done
+            self.did_setup_ood = True

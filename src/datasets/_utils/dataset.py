@@ -30,7 +30,7 @@ class TransformedDataset(Dataset[Any]):
 
 class TransformedDatasetWILDS(TransformedDataset):
     """
-    Dataset that applies a transformation to its input and/or outputs.
+    TransformedDataset tailored for WILDS.
     """
 
     def __init__(

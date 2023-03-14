@@ -168,10 +168,6 @@ class Blob3DataModule(DataModule):
             train.to_csv(data_file_train, sep=",")
             test.to_csv(data_file_test, sep=",")
 
-            # ood_val = make_blobs(n_samples=200, centers=[[0, -2]], cluster_std=0.1)
-            # ood_val = pd.DataFrame({"X":ood_val[0][:, 0], "Y":ood_val[0][:, 1], "class":ood_val[1]})
-            # ood_val.to_csv(data_file_ood_val, sep=",")
-
             ood_test = make_blobs(n_samples=200, centers=[[0, -1]], cluster_std=0.1)
             ood_test = pd.DataFrame({"X":ood_test[0][:, 0], "Y":ood_test[0][:, 1], "class":ood_test[1]})
             ood_test.to_csv(data_file_ood_test, sep=",")
@@ -192,17 +188,10 @@ class Blob3DataModule(DataModule):
             X_test = torch.from_numpy(df_test.to_numpy()[:, :-1]).float()
             y_test = torch.from_numpy(df_test.to_numpy()[:, -1]).long()
 
-            # OOD val dataset
-            # ood_val_file = self.root / "blob" / "ood_val.csv"
-            # ood_val = cast(pd.DataFrame, pd.read_csv(ood_val_file, sep=",", index_col=0))
-            # X_ood_val = torch.from_numpy(ood_val.to_numpy()[:, :-1]).float()
-
             # Initialize datasts
             self.train_dataset = TensorDataset(X_train, y_train)
             self.val_dataset = TensorDataset(X_val, y_val)
             self.test_dataset = TensorDataset(X_test, y_test)
-            # self.ood_val_dataset = TensorDataset(X_ood_val, y_ood_val)
-            # self.ood_val_dataset = tabular_ood_dataset(X_val, X_ood_val)
             self.did_setup = True
         
         if stage == "test" and not self.did_setup_ood:

@@ -11,7 +11,6 @@ from lightkit import BaseEstimator
 from pytorch_lightning.callbacks import LearningRateMonitor
 from src.datasets import DataModule, OutputType
 from src.architectures.encoder import *
-from src.architectures.activation import *
 from src.models.natpn.nn import *
 from src.models.natpn.nn.flow import *
 from src.models.natpn.nn.output import CategoricalOutput, NormalOutput, PoissonOutput
@@ -41,28 +40,27 @@ class NaturalPosteriorNetwork(BaseEstimator):
         *,
         latent_dim: int = 16,
         encoder: EncoderType = "tabular",
-        encoder_act: ActivationType = "relu",
         flow: FlowType = "radial",
         flow_num_layers: int = 8,
-        prior_coeff: float = 1.0,
         budget: CertaintyBudget = "normal",
         dropout: float = 0.0,
         residual: bool = True,
         spectral: Tuple[bool] = (False, False, False),
-        coeff: float = 1.0, 
+        lipschitz_constant: float = 1.0, 
         n_power_iterations: int = 1,
         bn_out: bool = False,
         entropy_weight: float = 1e-5,
         reconst_weight: float = 0.0,
+        evidence_scaler: float = 1.0,
         pretrained_enc_path: str = "",
 
         # Training parameters
         learning_rate: float = 1e-3,
-        learning_rate_nf: float = 1e-4,
+        learning_rate_head: float = 1e-4,
         early_stopping: bool = False,
         warmup_epochs: int = 5,
         finetune_epochs: int = 0,
-        optim: str = "adam",
+        optim: str = "adamw",
         scheduler: str = "multistep",
         training_schema: str = "joint-all",
         trainer_params: Optional[Dict[str, Any]] = None,
@@ -71,33 +69,35 @@ class NaturalPosteriorNetwork(BaseEstimator):
         Args:
             latent_dim: The dimension of the latent space that the encoder should map to.
             encoder: The type of encoder to use which maps the input to the latent space.
-            encoder_act: The encoder's activation function used
             flow: The type of flow which produces log-probabilities from the latent
                 representations.
             flow_num_layers: The number of layers to use for the flow. If ``flow`` is set to
                 ``"maf"``, this sets the number of masked autoregressive layers. In between each
                 of these layers, another batch normalization layer is added.
-            prior_coeff: prior scaler for the `evidence parameter n`.
+            evidence_scaler: prior scaler for the `evidence parameter n`.
             budget: The certainty budget to use to scale the log-probabilities produced
                 by the normalizing flow.
             dropout: The dropout probability to use for dropout layers in the encoder.
             residual: Used only for the TabularEncoder
             spectral: The usage of spectral normalization for different layers
                 (spectral_fc, spectral_conv, spectral_bn)
-            coeff: The spectral normalization's Lipschitz constant parameter.
+            lipschitz_constant: The spectral normalization's Lipschitz constant parameter.
             n_power_iterations: The spectral normalization's power iteration parameter.
             bn_out: Append the batch normalization layer at the end of the encoder.
-            learning_rate: The learning rate to use for training encoder, flow, and linear output
-                layer. Applies to warm-up, actual training, and fine-tuning.
-            early_stopping: Early stopping for the training.
             entropy_weight: The strength of the entropy regularizer for the Bayesian loss used for
                 the main training procedure.
             reconst_weight: The reconstruction term coefficient in the loss.
+            evidence_scaler: The scaler for the prior evidence parameter.
+            pretrained_enc_path: The path used to load a pretrained encoder.
+            learning_rate: The learning rate to use for training encoder and linear output layer.
+            early_stopping: Early stopping for the training.
             warmup_epochs: The number of epochs to run warm-up for. Should be used if the latent
-                space is high-dimensional and/or the normalizing flow is complex, i.e. consists of
-                many layers.
+                space is high-dimensional and/or the normalizing flow is complex.
             finetune_epochs: The number of epochs to run fine-tuning after the main training 
                 loop for. It helps to improve out-of-distribution detection.
+            optim: The optimizer used.
+            scheduler: The scheduler used to schedule the optimizer.
+            training_schema: The training schema joint or frozen. 
             trainer_params: Additional parameters which are passed to the PyTorch Ligthning
                 trainer. These parameters apply to all fitting runs as well as testing.
         """
@@ -113,22 +113,21 @@ class NaturalPosteriorNetwork(BaseEstimator):
 
         self.latent_dim = latent_dim
         self.encoder = encoder
-        self.encoder_act = encoder_act
         self.flow = flow
         self.flow_num_layers = flow_num_layers
-        self.prior_coeff = prior_coeff
+        self.evidence_scaler = evidence_scaler
         self.budget = budget
         self.dropout = dropout
         self.residual = residual
         self.spectral = spectral
-        self.coeff = coeff
+        self.lipschitz_constant = lipschitz_constant
         self.n_power_iterations = n_power_iterations
         self.bn_out = bn_out
         self.entropy_weight = entropy_weight
         self.reconst_weight = reconst_weight
         self.pretrained_enc_path = pretrained_enc_path
         self.learning_rate = learning_rate
-        self.learning_rate_nf = learning_rate_nf
+        self.learning_rate_head = learning_rate_head
         self.early_stopping = early_stopping
         self.warmup_epochs = warmup_epochs
         self.finetune_epochs = finetune_epochs
@@ -153,7 +152,6 @@ class NaturalPosteriorNetwork(BaseEstimator):
         Returns:
             The estimator whose ``model_`` property is set.
         """
-
         with tempfile.TemporaryDirectory() as tmp_dir:
             model = self._init_model(
                 data.output_type,
@@ -220,6 +218,16 @@ class NaturalPosteriorNetwork(BaseEstimator):
         return results
 
     def score_ood_corrupted(self, data: DataModule):
+        """
+        Measures the model's ability to detect out-of-distribution for CIFAR corrupted dataset.
+
+        Args:
+            data: CIFAR corrupted dataset.
+            
+        Returns:
+            A nested dictionary which provides for multiple out-of-distribution datasets (first
+            key) multiple metrics for measuring epistemic and aleatoric uncertainty.
+        """
         logger.info("Evaluating on corrupted test set...")
         results = {"loss": [], "accuracy": [], "brier": [], "log_prob": []}
         for i, loader in enumerate(data.ood_corrupted_dataloaders()):
@@ -281,10 +289,10 @@ class NaturalPosteriorNetwork(BaseEstimator):
         callbacks = [lr_monitor] if self.trainer().logger else []
 
         # Select joint training schema
-        # joint-all:                Pretrained -> Joint (all)
-        # joint-frozen-enc:         Pretrained -> Joint (NF + output)
-        # reset-joint-all:          Pretrained (reset linear) -> Joint (all)
-        # reset-joint-frozen-enc:   Pretrained (reset linear) -> Joint (NF + output + last linear)
+        # joint-all:                Train NF + linear output + encoder 
+        # joint-frozen-enc:         Train NF + linear output
+        # reset-joint-all:          Train NF + linear output + encoder (reset last layer)
+        # reset-joint-frozen-enc:   Train NF + linear output + encoder (reset last layer only)
         if self.training_schema == "joint-all":
             logger.info("Running joint-all...")
         elif self.training_schema == "joint-frozen-enc":
@@ -305,7 +313,7 @@ class NaturalPosteriorNetwork(BaseEstimator):
         else:
             raise NotImplementedError
 
-        # Run warmup the Normalizing Flow
+        # Run warmup
         if self.warmup_epochs > 0:
             logger.info("Running warmup...")
             trainer = self.trainer(
@@ -315,20 +323,20 @@ class NaturalPosteriorNetwork(BaseEstimator):
             )
             warmup_module = NaturalPosteriorNetworkFlowLightningModule(
                 model, 
-                learning_rate=self.learning_rate_nf, 
+                learning_rate=self.learning_rate_head, 
                 early_stopping=False,
                 phase="warmup",
             )
             trainer.fit(warmup_module, data)
 
-        # Run joint training
+        # Run training
         trainer = self.trainer(
             callbacks=callbacks,
         )
         train_module = NaturalPosteriorNetworkLightningModule(
             model,
             learning_rate=self.learning_rate,
-            learning_rate_nf=self.learning_rate_nf,
+            learning_rate_head=self.learning_rate_head,
             entropy_weight=self.entropy_weight,
             reconst_weight=self.reconst_weight,
             early_stopping=self.early_stopping,
@@ -348,7 +356,7 @@ class NaturalPosteriorNetwork(BaseEstimator):
             )
             finetune_module = NaturalPosteriorNetworkFlowLightningModule(
                 cast(NaturalPosteriorNetworkModel, best_module.model),
-                learning_rate=self.learning_rate_nf,
+                learning_rate=self.learning_rate_head,
                 early_stopping=self.early_stopping,
                 phase="finetune",
             )
@@ -367,10 +375,9 @@ class NaturalPosteriorNetwork(BaseEstimator):
                 input_size[0], 
                 [64] * 3, 
                 self.latent_dim,
-                act=self.encoder_act,
                 spectral=self.spectral,
                 residual=self.residual,
-                coeff=self.coeff,
+                lipschitz_constant=self.lipschitz_constant,
                 n_power_iterations=self.n_power_iterations,
                 bn_out=self.bn_out,
                 reconst_out=self.reconst_weight>0,
@@ -380,10 +387,9 @@ class NaturalPosteriorNetwork(BaseEstimator):
                     self.latent_dim,
                     [64] * 3,
                     input_size[0],
-                    act=self.encoder_act,
                     spectral=self.spectral,
                     residual=self.residual,
-                    coeff=self.coeff,
+                    lipschitz_constant=self.lipschitz_constant,
                     n_power_iterations=self.n_power_iterations,
                 )
         elif self.encoder == "resnet18":
@@ -391,18 +397,16 @@ class NaturalPosteriorNetwork(BaseEstimator):
                 self.latent_dim, 
                 num_classes,
                 input_size[1], 
-                act=self.encoder_act,
                 residual=self.residual,
                 spectral=self.spectral, 
-                coeff=self.coeff,
+                lipschitz_constant=self.lipschitz_constant,
                 n_power_iterations=self.n_power_iterations,
                 reconst_out=self.reconst_weight>0,
             )
             if self.reconst_weight > 0:
                 decoder = ResNetDecoder(
-                    act=self.encoder_act,
                     spectral=self.spectral,
-                    coeff=self.coeff,
+                    lipschitz_constant=self.lipschitz_constant,
                     n_power_iterations=self.n_power_iterations,
                 )
         elif self.encoder == "wide-resnet":
@@ -445,8 +449,6 @@ class NaturalPosteriorNetwork(BaseEstimator):
             flows = nn.ModuleList([RadialFlow(self.latent_dim, self.flow_num_layers)])
         elif self.flow == "maf":
             flows = nn.ModuleList([MaskedAutoregressiveFlow(self.latent_dim, self.flow_num_layers)])
-        elif self.flow == "residual":
-            flows = nn.ModuleList([ResidualFlow(self.latent_dim, self.flow_num_layers)])
         elif self.flow == "nsf":
             flows = nn.ModuleList([NeuralSplineFlow(self.latent_dim, self.flow_num_layers)])
         elif self.flow == "nsf-r":
@@ -456,7 +458,7 @@ class NaturalPosteriorNetwork(BaseEstimator):
 
         # Initialize output
         if output_type == "categorical":
-            output = CategoricalOutput(self.latent_dim, num_classes, self.prior_coeff)
+            output = CategoricalOutput(self.latent_dim, num_classes, self.evidence_scaler)
         elif output_type == "normal":
             output = NormalOutput(self.latent_dim)
         elif output_type == "poisson":

@@ -1,11 +1,11 @@
 # pylint: disable=abstract-method
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import EarlyStopping
 from torch import optim
 from torch.nn import ModuleList
-from torchmetrics import Accuracy, MeanSquaredError, AUROC
+from torchmetrics import Accuracy, MeanSquaredError
 from src.metrics import BrierScore, QuantileCalibrationScore
 from src.models.natpn.nn import NaturalPosteriorNetworkModel
 from src.models.natpn.nn.output import CategoricalOutput
@@ -24,13 +24,6 @@ class NaturalPosteriorNetworkFlowLightningModule(pl.LightningModule):
         early_stopping: bool = False,
         phase: str = "train",
     ):
-        """
-        Args:
-            model: The model whose flow to optimize.
-            learning_rate: The learning rate to use for the Adam optimizer.
-            early_stopping: Whether to use early stopping for training.
-            phase: This can be ``warmup``, ``train``, ``finetune``
-        """
         super().__init__()
         # self.save_hyperparameters()
         self.model = model

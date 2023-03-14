@@ -4,25 +4,25 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 import gpytorch
-from torch import optim
 from torch.nn import ModuleList
-from torchmetrics import Accuracy, MeanSquaredError, AUROC
+from torchmetrics import Accuracy, AUROC
 from pytorch_lightning.callbacks.early_stopping import EarlyStopping
-from src.metrics import BrierScore
 from src.architectures.encoder import *
+from src.metrics import BrierScore
 
 Batch = Tuple[torch.Tensor, torch.Tensor]
 
 
 class DeepKernelLearningLightningModule(pl.LightningModule):
     """
+    Lightning module for training and evaluating DUE.
     """
 
     def __init__(
         self,
         model,
         learning_rate: float = 1e-3,
-        learning_rate_gp: float = 1e-3,
+        learning_rate_head: float = 1e-3,
         early_stopping: bool = False,
         optim: str = "sgd",
         scheduler: str = "cosine5e-4",
@@ -30,15 +30,11 @@ class DeepKernelLearningLightningModule(pl.LightningModule):
         max_epochs: int = 1,
         phase: str = "train",
     ):
-        """
-        Args:
-            model: The model to train or evaluate. 
-        """
         super().__init__()
         # self.save_hyperparameters()
         self.model = model
         self.learning_rate = learning_rate
-        self.learning_rate_gp = learning_rate_gp
+        self.learning_rate_head = learning_rate_head
         self.early_stopping = early_stopping
         self.optim = optim
         self.scheduler = scheduler
@@ -94,39 +90,13 @@ class DeepKernelLearningLightningModule(pl.LightningModule):
         optim.append(
             torch.optim.AdamW(
                 models2,
-                lr=self.learning_rate_gp,
+                lr=self.learning_rate_head,
                 weight_decay=1e-6,
             )
         )
 
-        # optim = torch.optim.SGD(
-        #     self.model.parameters(),
-        #     lr=self.learning_rate,
-        #     momentum=0.9,
-        #     weight_decay=5e-4,
-        # )
-        # lr_scheduler = {
-        #     "scheduler": torch.optim.lr_scheduler.CosineAnnealingLR(
-        #         optim,
-        #         T_max=self.max_epochs * self.n_batches,
-        #         eta_min=5e-4,
-        #     ),
-        #     "interval": "step",
-        # }
-        # return [optim], [lr_scheduler]
-
         # Initialize scheduler
-        if self.scheduler == "plateau":
-            lr_scheduler = {
-                "scheduler": torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    optim[0],
-                    factor=0.2,
-                    patience=self.trainer.max_epochs // 5,
-                    min_lr=1e-7,
-                ),
-                "monitor": "val/id/loss",
-            }
-        elif self.scheduler == "multistep":
+        if self.scheduler == "multistep":
             lr_scheduler = {
                 "scheduler": torch.optim.lr_scheduler.MultiStepLR(
                     optim[0], milestones=[60, 120, 160], gamma=0.2
@@ -138,24 +108,6 @@ class DeepKernelLearningLightningModule(pl.LightningModule):
                     optim[0],
                     T_max=self.max_epochs * self.n_batches,
                     eta_min=5e-4,
-                ),
-                "interval": "step",
-            }
-        elif self.scheduler == "cosine1e-4":
-            lr_scheduler = {
-                "scheduler": torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optim[0],
-                    T_max=self.max_epochs * self.n_batches,
-                    eta_min=1e-4,
-                ),
-                "interval": "step",
-            }
-        elif self.scheduler == "cosine5e-5":
-            lr_scheduler = {
-                "scheduler": torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optim[0],
-                    T_max=self.max_epochs * self.n_batches,
-                    eta_min=5e-5,
                 ),
                 "interval": "step",
             }
@@ -199,7 +151,6 @@ class DeepKernelLearningLightningModule(pl.LightningModule):
             return y_pred
 
     def training_step(self, batch: Batch, batch_idx: int, optimizer_idx: int) -> torch.Tensor:
-    # def training_step(self, batch: Batch, batch_idx: int) -> torch.Tensor:
         X, y_true = batch
         if self.model.reconst_weight > 0 and self.model.encoder.training:
             y_pred, y_hat = self(X)

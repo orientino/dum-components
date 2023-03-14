@@ -23,7 +23,7 @@ class NaturalPosteriorNetworkLightningModule(pl.LightningModule):
         self,
         model: NaturalPosteriorNetworkModel,
         learning_rate: float = 1e-3,
-        learning_rate_nf: float = 1e-3,
+        learning_rate_head: float = 1e-3,
         entropy_weight: float = 0.0,
         reconst_weight: float = 0.0,
         early_stopping: bool = False,
@@ -31,18 +31,11 @@ class NaturalPosteriorNetworkLightningModule(pl.LightningModule):
         scheduler: str = "multistep",
         n_batches: int = 1,
     ):
-        """
-        Args:
-            model: The model to train or evaluate. If training, this *must* be a
-                :class:`NaturalPosteriorNetworkModel`.
-            learning_rate: The learning rate to use for the Adam optimizer.
-            entropy_weight: The weight of the entropy regularizer in the Bayesian loss.
-        """
         super().__init__()
         # self.save_hyperparameters()
         self.model = model
         self.learning_rate = learning_rate
-        self.learning_rate_nf = learning_rate_nf
+        self.learning_rate_head = learning_rate_head
         self.loss = BayesianLoss(entropy_weight, reconst_weight)
         self.early_stopping = early_stopping
         self.optim = optim
@@ -92,12 +85,7 @@ class NaturalPosteriorNetworkLightningModule(pl.LightningModule):
         if self.model.decoder:
             models1 += [{"params": self.model.decoder.parameters()}]
 
-        if self.optim == "adam":
-            optim = [torch.optim.Adam(
-                models1,
-                lr=self.learning_rate,
-            )]
-        elif self.optim == "adamw":
+        if self.optim == "adamw":
             optim = [torch.optim.AdamW(
                 models1,
                 lr=self.learning_rate,
@@ -116,7 +104,7 @@ class NaturalPosteriorNetworkLightningModule(pl.LightningModule):
         optim.append(
             torch.optim.AdamW(
                 models2,
-                lr=self.learning_rate_nf,
+                lr=self.learning_rate_head,
                 weight_decay=1e-6,
             )
         )
@@ -144,24 +132,6 @@ class NaturalPosteriorNetworkLightningModule(pl.LightningModule):
                     optim[0],
                     T_max=self.trainer.max_epochs * self.n_batches,
                     eta_min=5e-4,
-                ),
-                "interval": "step",
-            }
-        elif self.scheduler == "cosine1e-4":
-            lr_scheduler = {
-                "scheduler": torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optim[0],
-                    T_max=self.trainer.max_epochs * self.n_batches,
-                    eta_min=1e-4,
-                ),
-                "interval": "step",
-            }
-        elif self.scheduler == "cosine5e-5":
-            lr_scheduler = {
-                "scheduler": torch.optim.lr_scheduler.CosineAnnealingLR(
-                    optim[0],
-                    T_max=self.trainer.max_epochs * self.n_batches,
-                    eta_min=5e-5,
                 ),
                 "interval": "step",
             }
@@ -216,7 +186,6 @@ class NaturalPosteriorNetworkLightningModule(pl.LightningModule):
         else:
             y_pred, log_prob = self(X)
             loss, _, _ = self.loss.forward(y_pred, y_true)
-            # loss = torch.nn.functional.nll_loss(y_pred.maximum_a_posteriori().logits, y_true)
 
         self.log("train/loss", loss, prog_bar=True)
         self.log("train/log_prob", log_prob.mean(), prog_bar=True)
@@ -226,7 +195,6 @@ class NaturalPosteriorNetworkLightningModule(pl.LightningModule):
         X, y_true = batch
         y_pred, log_prob = self(X)
         loss, _, _ = self.loss.forward(y_pred, y_true)
-        # loss = torch.nn.functional.nll_loss(y_pred.maximum_a_posteriori().logits, y_true)
 
         prefix = f"val/{self.data2dist[dataloader_idx]}"
         self.log(f"{prefix}/loss", loss, prog_bar=True, add_dataloader_idx=False)
@@ -237,7 +205,6 @@ class NaturalPosteriorNetworkLightningModule(pl.LightningModule):
         X, y_true = batch
         y_pred, log_prob = self(X)
         loss, _, _ = self.loss.forward(y_pred, y_true)
-        # loss = torch.nn.functional.nll_loss(y_pred.maximum_a_posteriori().logits, y_true)
 
         prefix = f"test/{self.data2dist[dataloader_idx]}"
         prefix = f"test/ood{dataloader_idx}" if dataloader_idx > 0 else prefix
