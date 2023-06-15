@@ -25,6 +25,5 @@ __all__ = [
     "tv_resnet18",
     "tv_resnet50",
     "tv_efficientnet_v2_s",
-    "tv_swin_t",
-    "get_pretrained_path",
+    "tv_swin_t"
 ]
